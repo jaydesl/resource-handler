@@ -26,6 +26,9 @@ import novaclient.client
 import novaclient.auth_plugin
 from keystoneauth1 import loading
 from keystoneauth1 import session
+from keystoneclient.auth.identity import v3
+from keystoneclient import session
+from keystoneclient.v3 import client
 import urlparse
 import occo.util.factory as factory
 from occo.util import wet_method, coalesce, unique_vmname
@@ -52,28 +55,28 @@ STATE_MAPPING = {
 log = logging.getLogger('occo.resourcehandler.nova')
 
 def setup_connection(endpoint, auth_data, resolved_node_definition):
-    """
-    Setup the connection to the Nova endpoint.
-    """
-    tenant_name = resolved_node_definition['resource'].get('tenant_name', None)
-    project_id = resolved_node_definition['resource'].get('project_id', None)
-    user_domain_name = resolved_node_definition['resource'].get('user_domain_name', 'Default')
-    if auth_data.get('type',None) is None:
-        user = auth_data['username']
-        password = auth_data['password']
-        if tenant_name is not None:
-            nt = novaclient.client.Client('2.0', user, password, tenant_name, endpoint)
-        else:
-            loader = loading.get_plugin_loader('password')
-            auth = loader.load_from_options(auth_url=endpoint, username=user, password=password, project_id=project_id, user_domain_name=user_domain_name)
-            sess = session.Session(auth=auth)
-            nt = novaclient.client.Client(2, session=sess)
-    elif auth_data.get('type',None) == 'voms':
-        novaclient.auth_plugin.discover_auth_systems()
-        auth_plugin = novaclient.auth_plugin.load_plugin('voms')
-        auth_plugin.opts["x509_user_proxy"] = auth_data['proxy']
-        nt = novaclient.client.Client('2.0', None, None, tenant_name, endpoint, auth_plugin=auth_plugin, auth_system='voms')
-    return nt
+   """
+   Setup the connection to the Nova endpoint.
+   """
+   tenant_name = resolved_node_definition['resource'].get('tenant_name', None)
+   project_id = resolved_node_definition['resource'].get('project_id', None)
+   user_domain_name = resolved_node_definition['resource'].get('user_domain_name', 'Default')
+   if auth_data.get('type',None) is None:
+       user = auth_data['username']
+       password = auth_data['password']
+       if tenant_name is not None:
+           nt = novaclient.client.Client('2.0', user, password, tenant_name, endpoint)
+       else:
+           auth = v3.Password(auth_url=endpoint, username=user, password=password, project_id=project_id, user_domain_name=user_domain_name)
+           sess = session.Session(auth=auth)
+           keystone = client.Client(session=sess)
+           nt = novaclient.client.Client(2, session=keystone.session)
+   elif auth_data.get('type',None) == 'voms':
+       novaclient.auth_plugin.discover_auth_systems()
+       auth_plugin = novaclient.auth_plugin.load_plugin('voms')
+       auth_plugin.opts["x509_user_proxy"] = auth_data['proxy']
+       nt = novaclient.client.Client('2.0', None, None, tenant_name, endpoint, auth_plugin=auth_plugin, auth_system='voms')
+   return nt
 
 def needs_connection(f):
     """
