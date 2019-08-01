@@ -130,6 +130,7 @@ class CreateNode(Command):
         context = node_def.get('context', None)
         sec_groups = node_def['resource'].get('security_groups', None)
         key_name = node_def['resource'].get('key_name', None)
+        avail_zone = node_def['resource'].get('availability_zone', None)
         server_name = node_def['resource'].get('server_name',unique_vmname(node_def))
         network_id = node_def['resource'].get('network_id', None)
         nics = None
@@ -137,29 +138,39 @@ class CreateNode(Command):
             nics = [{"net-id": network_id, "v4-fixed-ip": ''}]
         log.debug("[%s] Creating new server using image ID %r and flavor name %r",
             resource_handler.name, image_id, flavor_name)
-        try:
-            server = None
-            KBinterrupt = False
-            with GracefulInterruptHandler() as h:
-                log.debug('Server creation started for node %s...', node_def['node_id'])
-                server = self.conn.servers.create(server_name, image_id, flavor_name,
-                     security_groups=sec_groups, key_name=key_name, userdata=context, nics=nics)
-                KBinterrupt = h.interrupted
-                log.debug('Server creation finished for node %s: server: %r', node_def['node_id'], server)
-            if KBinterrupt:
-              log.debug('Keyboard interrupt detected while VM was being created!')
-              raise KeyboardInterrupt
-        except KeyboardInterrupt:
-            log.debug('Interrupting node creation!')
-            if server is not None:
-                log.debug('Rolling back...')
-                try:
-                    self.conn.servers.delete(server)
-                except Exception as ex:
+        retries = 0
+        while True:
+            try:
+                server = None
+                KBinterrupt = False
+                with GracefulInterruptHandler() as h:
+                    log.debug('Server creation started for node %s...', node_def['node_id'])
+                    server = self.conn.servers.create(server_name, image_id, flavor_name,
+                        security_groups=sec_groups, key_name=key_name, userdata=context, 
+                        nics=nics, availability_zone=avail_zone)
+                    KBinterrupt = h.interrupted
+                    log.debug('Server creation finished for node %s: server: %r', node_def['node_id'], server)
+                if KBinterrupt:
+                    log.debug('Keyboard interrupt detected while VM was being created!')
+                    raise KeyboardInterrupt
+            except KeyboardInterrupt:
+                log.debug('Interrupting node creation!')
+                if server is not None:
+                    log.debug('Rolling back...')
+                    try:
+                        self.conn.servers.delete(server)
+                    except Exception as ex:
+                        raise NodeCreationError(None, str(ex))
+                raise
+            except Exception as ex:
+                if retries > 5:
                     raise NodeCreationError(None, str(ex))
-            raise
-        except Exception as ex:
-            raise NodeCreationError(None, str(ex)) 
+                time.sleep(random.randint(4,8))
+                retries += 1
+                log.debug("Failed creating node %s attempt %d/5", 
+                  node_def['node_id'], retries)
+            else:
+                break
         return server
 
     def _allocate_floating_ip(self, resource_handler,server):
@@ -266,10 +277,19 @@ class DropNode(Command):
             return
         log.debug("[%s] Dropping node %r", resource_handler.name,
                   self.instance_data['node_id'])
-        try:
-            self._delete_vms(resource_handler, instance_id)
-        except Exception as ex:
-            raise NodeCreationError(None, str(ex))
+        retries = 0
+        while True:
+            try:
+                self._delete_vms(resource_handler, instance_id)
+            except Exception as ex:
+                if retries > 5:
+                    raise NodeCreationError(None, str(ex))
+                time.sleep(random.randint(4,8))
+                retries += 1
+                log.debug("[%s] Failed dropping node %r attempt %d/5", 
+                  resource_handler.name, self.instance_data['node_id'], retries)
+            else:
+                break
 
         log.debug("[%s] Done", resource_handler.name)
 
@@ -284,10 +304,19 @@ class GetState(Command):
     def perform(self, resource_handler):
         log.debug("[%s] Acquiring node state %r",
                   resource_handler.name, self.instance_data['node_id'])
-        try: 
-            server = self.conn.servers.get(self.instance_data['instance_id'])
-        except Exception as ex:
-            raise NodeCreationError(None, str(ex))
+        retries = 0
+        while True:
+            try: 
+                server = self.conn.servers.get(self.instance_data['instance_id'])
+            except Exception as ex:
+                if retries > 5:
+                    raise NodeCreationError(None, str(ex))
+                time.sleep(random.randint(4,8))
+                retries += 1
+                log.debug("[%s] Failed acquiring state %r attempt %d/5",
+                  resource_handler.name, self.instance_data['node_id'], retries)
+            else:
+                break
         inst_state = server.status
         try:
             retval = STATE_MAPPING[inst_state]
@@ -310,10 +339,19 @@ class GetAnyIpAddress(Command):
         log.debug("[%s] Acquiring IP address for %r",
                   resource_handler.name,
                   self.instance_data['node_id'])
-        try:
-            server = self.conn.servers.get(self.instance_data['instance_id'])
-        except Exception as ex:
-            raise NodeCreationError(None, str(ex))
+        retries = 0
+        while True:
+            try:
+                server = self.conn.servers.get(self.instance_data['instance_id'])
+            except Exception as ex:
+                if retries > 5:
+                    raise NodeCreationError(None, str(ex))
+                time.sleep(random.randint(4,8))
+                retries += 1
+                log.debug("[%s] Failed acquiring IP address for %r attempt %d/5",
+                    resource_handler.name, self.instance_data['node_id'], retries)
+            else:
+                break
         floating_ips = self.conn.floating_ips.list()
         for floating_ip in floating_ips:
             if floating_ip.instance_id == server.id:
@@ -336,10 +374,19 @@ class GetPrivIpAddress(Command):
         log.debug("[%s] Acquiring private IP address for %r",
                   resource_handler.name,
                   self.instance_data['node_id'])
-        try:
-            server = self.conn.servers.get(self.instance_data['instance_id'])
-        except Exception as ex:
-            raise NodeCreationError(None, str(ex))
+        retries = 0
+        while True:
+            try:
+                server = self.conn.servers.get(self.instance_data['instance_id'])
+            except Exception as ex:
+                if retries > 5:
+                    raise NodeCreationError(None, str(ex))
+                time.sleep(random.randint(4,8))
+                retries += 1
+                log.debug("[%s] Failed acquiring private IP address for %r attempt %d/5",
+                    resource_handler.name, self.instance_data['node_id'], retries)
+            else:
+                break
         ip = ""
         floating_ips = self.conn.floating_ips.list()
         networks = self.conn.servers.ips(server)
@@ -355,7 +402,7 @@ class GetPrivIpAddress(Command):
                 if private_ip != "":
                   log.debug("[%s] Private ip found: %s",resource_handler.name,private_ip)
                   return private_ip
-        log.debug("[%s] Private ip not found.",resource_handler.name,ip)
+        log.debug("[%s] Private ip not found. %s",resource_handler.name,ip)
         return None 
 
 @factory.register(ResourceHandler, PROTOCOL_ID)
@@ -418,7 +465,7 @@ class NovaResourceHandler(ResourceHandler):
 class NovaSchemaChecker(RHSchemaChecker):
     def __init__(self):
         self.req_keys = ["type", "endpoint", "image_id", "flavor_name"]
-        self.opt_keys = ["server_name", "key_name", "security_groups", "floating_ip", "name", "project_id", "tenant_name", "user_domain_name", "network_id", "floating_ip_pool"]
+        self.opt_keys = ["server_name", "key_name", "availability_zone", "security_groups", "floating_ip", "name", "project_id", "tenant_name", "user_domain_name", "network_id", "floating_ip_pool"]
     def perform_check(self, data):
         missing_keys = RHSchemaChecker.get_missing_keys(self, data, self.req_keys)
         if missing_keys:
